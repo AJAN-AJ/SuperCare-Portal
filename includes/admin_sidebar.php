@@ -117,11 +117,18 @@ flex-col
             Platform Management
         </a>
 
-        <a href="audit_logs.php"
+        <a href="salary_management.php"
+           onclick="closeSidebar()"
+           class="p-4 rounded-xl hover:bg-gray-700 transition">
+           Salary management
+        </a>
+
+
+       <!-- <a href="audit_logs.php"
            onclick="closeSidebar()"
            class="p-4 rounded-xl hover:bg-gray-700 transition">
             Audit Logs
-        </a>
+        </a>-->
 
     </nav>
 

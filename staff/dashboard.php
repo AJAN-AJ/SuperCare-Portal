@@ -13,32 +13,38 @@ if (!isset($_SESSION["user_id"]) || $_SESSION["role"] != "teller") {
 $user_id = $_SESSION["user_id"];
 $today   = date("Y-m-d");
 
-/* Fetch teller profile */
+/* Fetch teller profile + photo */
 $userStmt = $conn->prepare("
-    SELECT full_name, username, date_of_birth, phone, address, next_of_kin,
-           annual_leave_days, annual_leave_used, profile_completed
-    FROM users WHERE id = ?
+    SELECT u.full_name, u.username, u.date_of_birth, u.phone, u.address, u.next_of_kin,
+           u.annual_leave_days, u.annual_leave_used, u.profile_completed,
+           ep.profile_photo, ep.first_name, ep.middle_name, ep.surname,
+           ep.national_id, ep.phone_1, ep.phone_2, ep.physical_address,
+           ep.original_village, ep.ref_first_name, ep.ref_surname, ep.ref_phone,
+           ep.oath_signed
+    FROM users u
+    LEFT JOIN employee_profiles ep ON ep.user_id = u.id
+    WHERE u.id = ?
 ");
 $userStmt->bind_param("i", $user_id);
 $userStmt->execute();
-$teller = $userStmt->get_result()->fetch_assoc();
+$teller          = $userStmt->get_result()->fetch_assoc();
 $remaining_leave = $teller["annual_leave_days"] - $teller["annual_leave_used"];
+$profile_photo   = $teller["profile_photo"] ?? null;
 
 /* Today's balance session */
-$stmt = $conn->prepare("SELECT * FROM balance_sessions WHERE user_id = ? AND balance_date = ?");
+$stmt = $conn->prepare("SELECT * FROM balance_sessions WHERE user_id=? AND balance_date=?");
 $stmt->bind_param("is", $user_id, $today);
 $stmt->execute();
 $sessionResult = $stmt->get_result();
 $session       = null;
 $sessionExists = false;
-
 if ($sessionResult->num_rows > 0) {
     $session       = $sessionResult->fetch_assoc();
     $sessionExists = true;
 }
 
 /* Attendance check */
-$stmt = $conn->prepare("SELECT * FROM attendance WHERE user_id = ? AND DATE(check_in_time) = CURDATE()");
+$stmt = $conn->prepare("SELECT * FROM attendance WHERE user_id=? AND DATE(check_in_time)=CURDATE()");
 $stmt->bind_param("i", $user_id);
 $stmt->execute();
 $already_checked = $stmt->get_result()->num_rows > 0;
@@ -51,7 +57,7 @@ if ($sessionExists) {
         SELECT ba.*, p.name AS platform_name
         FROM balance_adjustments ba
         JOIN platforms p ON ba.platform_id = p.id
-        WHERE ba.balance_session_id = ?
+        WHERE ba.balance_session_id=?
         ORDER BY ba.created_at DESC
     ");
     $stmt->bind_param("i", $session_id);
@@ -71,10 +77,8 @@ if ($sessionExists) {
     }
     $expected = floatval($session["opening_total"]) - floatval($outgoing) + floatval($incoming);
 }
-
 $analysisDifference = floatval($session["closing_total"] ?? 0) - floatval($expected);
 
-/* Active tab from URL */
 $tab = $_GET["tab"] ?? "dashboard";
 ?>
 <!DOCTYPE html>
@@ -85,9 +89,7 @@ $tab = $_GET["tab"] ?? "dashboard";
     <title>Dashboard — <?= htmlspecialchars($teller["full_name"]) ?></title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        @media (max-width: 640px) {
-            input, select { font-size: 16px !important; }
-        }
+        @media (max-width: 640px) { input, select { font-size: 16px !important; } }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
     </style>
@@ -102,13 +104,26 @@ $tab = $_GET["tab"] ?? "dashboard";
 
     <!-- ── Welcome bar ── -->
     <div class="bg-gray-800 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-            <p class="text-gray-400 text-sm">Welcome back,</p>
-            <h1 class="text-2xl sm:text-3xl font-bold"><?= htmlspecialchars($teller["full_name"]) ?></h1>
-            <p class="text-gray-500 text-xs mt-0.5">@<?= htmlspecialchars($teller["username"]) ?> · <?= date("l, d F Y") ?></p>
+        <div class="flex items-center gap-4">
+            <!-- Profile photo in welcome bar -->
+            <?php if ($profile_photo): ?>
+            <img src="../<?= htmlspecialchars($profile_photo) ?>"
+                 class="w-16 h-16 rounded-2xl object-cover border-2 border-blue-500 shrink-0 cursor-pointer"
+                 onclick="switchTab('profile')">
+            <?php else: ?>
+            <div class="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center
+                        text-2xl font-bold shrink-0 cursor-pointer"
+                 onclick="switchTab('profile')">
+                <?= strtoupper(substr($teller["full_name"], 0, 1)) ?>
+            </div>
+            <?php endif; ?>
+            <div>
+                <p class="text-gray-400 text-sm">Welcome back,</p>
+                <h1 class="text-xl sm:text-2xl font-bold"><?= htmlspecialchars($teller["full_name"]) ?></h1>
+                <p class="text-gray-500 text-xs mt-0.5">@<?= htmlspecialchars($teller["username"]) ?> · <?= date("l, d F Y") ?></p>
+            </div>
         </div>
         <div class="flex items-center gap-3">
-            <!-- Profile button -->
             <button onclick="switchTab('profile')"
                     class="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-500
                            px-4 py-2.5 rounded-xl text-sm font-medium transition-colors">
@@ -117,7 +132,6 @@ $tab = $_GET["tab"] ?? "dashboard";
                 </svg>
                 My Profile
             </button>
-            <!-- Check-in badge -->
             <?php if ($already_checked): ?>
             <span class="bg-green-600/30 text-green-400 border border-green-600 px-3 py-2 rounded-xl text-xs font-medium">
                 ✅ Checked In
@@ -144,7 +158,6 @@ $tab = $_GET["tab"] ?? "dashboard";
     <div id="tab-dashboard" class="tab-content active space-y-5">
 
         <?php if (!$already_checked): ?>
-        <!-- Check in prompt -->
         <div class="bg-gray-800 rounded-2xl p-6 text-center space-y-4">
             <p class="text-gray-400">You haven't checked in yet today.</p>
             <form method="POST" action="checkin.php">
@@ -157,7 +170,6 @@ $tab = $_GET["tab"] ?? "dashboard";
 
         <?php else: ?>
 
-        <!-- Session status banner -->
         <?php if ($sessionExists): ?>
         <?php
             $bannerClass = match($session["status"]) {
@@ -178,15 +190,13 @@ $tab = $_GET["tab"] ?? "dashboard";
         </div>
         <?php endif; ?>
 
-        <!-- Opening + Closing grid -->
         <?php if ($sessionExists): ?>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
             <!-- Opening -->
             <div class="bg-gray-800 rounded-2xl p-5">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="font-bold text-lg">Opening Balances</h3>
-                    <span class="text-blue-400 font-bold text-lg"><?= number_format($session["opening_total"], 2) ?></span>
+                    <span class="text-blue-400 font-bold"><?= number_format($session["opening_total"], 2) ?></span>
                 </div>
                 <?php
                 $open = $conn->prepare("SELECT p.name, bpe.opening_amount FROM balance_platform_entries bpe JOIN platforms p ON p.id=bpe.platform_id WHERE session_id=?");
@@ -208,7 +218,7 @@ $tab = $_GET["tab"] ?? "dashboard";
             <div class="bg-gray-800 rounded-2xl p-5">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="font-bold text-lg">Closing Balances</h3>
-                    <span class="text-red-400 font-bold text-lg"><?= number_format($session["closing_total"], 2) ?></span>
+                    <span class="text-red-400 font-bold"><?= number_format($session["closing_total"], 2) ?></span>
                 </div>
                 <?php
                 $close = $conn->prepare("SELECT p.name, bpe.closing_amount FROM balance_platform_entries bpe JOIN platforms p ON p.id=bpe.platform_id WHERE session_id=?");
@@ -225,7 +235,6 @@ $tab = $_GET["tab"] ?? "dashboard";
                 <?php endwhile; ?>
                 </div>
             </div>
-
         </div>
 
         <!-- Balance Analysis -->
@@ -303,12 +312,10 @@ $tab = $_GET["tab"] ?? "dashboard";
             </a>
             <?php endif; ?>
         </div>
-
-        <?php endif; // sessionExists ?>
-        <?php endif; // already_checked ?>
+        <?php endif; ?>
+        <?php endif; ?>
 
     </div><!-- /tab-dashboard -->
-
 
     <!-- ══════════════════════════════
          TAB: PROFILE
@@ -319,43 +326,76 @@ $tab = $_GET["tab"] ?? "dashboard";
         <div class="bg-gray-800 rounded-2xl p-5 sm:p-6">
 
             <!-- Avatar + name -->
-            <div class="flex flex-col sm:flex-row items-center sm:items-start gap-4 mb-6 pb-6 border-b border-gray-700">
-                <div class="w-20 h-20 rounded-2xl bg-blue-600 flex items-center justify-center text-3xl font-bold shrink-0">
-                    <?= strtoupper(substr($teller["full_name"], 0, 1)) ?>
+            <div class="flex flex-col sm:flex-row items-center sm:items-start gap-5 mb-6 pb-6 border-b border-gray-700">
+                <!-- Profile photo -->
+                <div class="shrink-0">
+                    <?php if ($profile_photo): ?>
+                    <img src="../<?= htmlspecialchars($profile_photo) ?>"
+                         class="w-24 h-24 rounded-2xl object-cover border-2 border-blue-500">
+                    <?php else: ?>
+                    <div class="w-24 h-24 rounded-2xl bg-blue-600 flex items-center justify-center text-3xl font-bold">
+                        <?= strtoupper(substr($teller["full_name"], 0, 1)) ?>
+                    </div>
+                    <?php endif; ?>
                 </div>
                 <div class="text-center sm:text-left">
                     <h2 class="text-2xl font-bold"><?= htmlspecialchars($teller["full_name"]) ?></h2>
                     <p class="text-gray-400 text-sm mt-0.5">@<?= htmlspecialchars($teller["username"]) ?></p>
-                    <span class="inline-block mt-2 <?= $teller["profile_completed"] ? 'bg-green-600/30 text-green-400 border-green-600' : 'bg-yellow-600/30 text-yellow-400 border-yellow-600' ?> border px-2.5 py-0.5 rounded-full text-xs font-medium">
-                        <?= $teller["profile_completed"] ? "Profile Complete" : "Profile Incomplete" ?>
-                    </span>
+                    <div class="flex flex-wrap justify-center sm:justify-start gap-2 mt-2">
+                        <span class="<?= $teller["profile_completed"] ? 'bg-green-600/30 text-green-400 border-green-600' : 'bg-yellow-600/30 text-yellow-400 border-yellow-600' ?> border px-2.5 py-0.5 rounded-full text-xs font-medium">
+                            <?= $teller["profile_completed"] ? "✓ Profile Complete" : "⚠ Profile Incomplete" ?>
+                        </span>
+                        <?php if ($teller["oath_signed"]): ?>
+                        <span class="bg-blue-600/30 text-blue-400 border border-blue-600 px-2.5 py-0.5 rounded-full text-xs font-medium">
+                            ✓ Oath Signed
+                        </span>
+                        <?php endif; ?>
+                    </div>
                 </div>
             </div>
 
-            <!-- Details grid -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-
+            <!-- Personal details -->
+            <h3 class="text-sm font-semibold text-blue-400 uppercase tracking-wide mb-3">Personal Details</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
                 <?php
                 $fields = [
-                    ["Date of Birth",  $teller["date_of_birth"] ? date("d F Y", strtotime($teller["date_of_birth"])) : "—", "🎂"],
-                    ["Phone",          $teller["phone"] ?: "—",       "📞"],
-                    ["Address",        $teller["address"] ?: "—",     "📍"],
-                    ["Next of Kin",    $teller["next_of_kin"] ?: "—", "👤"],
+                    ["📅", "Date of Birth",   $teller["date_of_birth"] ? date("d F Y", strtotime($teller["date_of_birth"])) : "—"],
+                    ["🪪", "National ID",      $teller["national_id"] ?: "—"],
+                    ["📞", "Phone 1",          $teller["phone_1"] ?: ($teller["phone"] ?: "—")],
+                    ["📞", "Phone 2",          $teller["phone_2"] ?: "—"],
+                    ["🏘️", "Village",          $teller["original_village"] ?: "—"],
+                    ["👤", "Next of Kin",      $teller["next_of_kin"] ?: "—"],
                 ];
                 foreach ($fields as $f):
                 ?>
-                <div class="bg-gray-700/50 rounded-xl p-4">
-                    <p class="text-gray-400 text-xs mb-1 flex items-center gap-1.5">
-                        <span><?= $f[2] ?></span><?= $f[0] ?>
-                    </p>
-                    <p class="font-medium text-sm"><?= htmlspecialchars($f[1]) ?></p>
+                <div class="bg-gray-700/50 rounded-xl p-3">
+                    <p class="text-gray-400 text-xs mb-0.5"><?= $f[0] ?> <?= $f[1] ?></p>
+                    <p class="font-medium text-sm"><?= htmlspecialchars($f[2]) ?></p>
                 </div>
                 <?php endforeach; ?>
-
+                <div class="bg-gray-700/50 rounded-xl p-3 col-span-1 sm:col-span-2">
+                    <p class="text-gray-400 text-xs mb-0.5">📍 Physical Address</p>
+                    <p class="font-medium text-sm"><?= htmlspecialchars($teller["physical_address"] ?: ($teller["address"] ?: "—")) ?></p>
+                </div>
             </div>
+
+            <!-- Referee -->
+            <?php if ($teller["ref_first_name"]): ?>
+            <h3 class="text-sm font-semibold text-blue-400 uppercase tracking-wide mb-3">Referee</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="bg-gray-700/50 rounded-xl p-3">
+                    <p class="text-gray-400 text-xs mb-0.5">👤 Name</p>
+                    <p class="font-medium text-sm"><?= htmlspecialchars($teller["ref_first_name"] . " " . $teller["ref_surname"]) ?></p>
+                </div>
+                <div class="bg-gray-700/50 rounded-xl p-3">
+                    <p class="text-gray-400 text-xs mb-0.5">📞 Phone</p>
+                    <p class="font-medium text-sm"><?= htmlspecialchars($teller["ref_phone"] ?: "—") ?></p>
+                </div>
+            </div>
+            <?php endif; ?>
         </div>
 
-        <!-- Leave balance card -->
+        <!-- Leave balance -->
         <div class="bg-gray-800 rounded-2xl p-5">
             <h3 class="font-bold text-lg mb-4">Leave Balance</h3>
             <div class="grid grid-cols-3 gap-3 mb-3">
@@ -369,10 +409,11 @@ $tab = $_GET["tab"] ?? "dashboard";
                 </div>
                 <div class="bg-gray-700/50 rounded-xl p-3 text-center">
                     <p class="text-gray-400 text-xs mb-1">Remaining</p>
-                    <p class="font-bold text-lg <?= $remaining_leave <= 3 ? 'text-red-400' : 'text-green-400' ?>"><?= $remaining_leave ?></p>
+                    <p class="font-bold text-lg <?= $remaining_leave <= 3 ? 'text-red-400' : 'text-green-400' ?>">
+                        <?= $remaining_leave ?>
+                    </p>
                 </div>
             </div>
-            <!-- Leave bar -->
             <div class="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
                 <?php $usedPct = $teller["annual_leave_days"] > 0 ? ($teller["annual_leave_used"] / $teller["annual_leave_days"]) * 100 : 0; ?>
                 <div class="h-2 rounded-full <?= $usedPct >= 80 ? 'bg-red-500' : ($usedPct >= 50 ? 'bg-yellow-500' : 'bg-green-500') ?>"
@@ -390,46 +431,40 @@ $tab = $_GET["tab"] ?? "dashboard";
         <!-- Quick links -->
         <div class="grid grid-cols-2 gap-3">
             <a href="my_leave_requests.php"
-               class="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl p-4 text-center text-sm font-medium transition-colors">
+               class="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl p-4
+                      text-center text-sm font-medium transition-colors">
                 🏖️ My Leave Requests
             </a>
             <button onclick="switchTab('dashboard')"
-                    class="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl p-4 text-center text-sm font-medium transition-colors">
+                    class="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl p-4
+                           text-center text-sm font-medium transition-colors">
                 ← Back to Dashboard
             </button>
         </div>
 
     </div><!-- /tab-profile -->
 
-</div><!-- /max-w -->
-</div><!-- /ml -->
+</div>
+</div>
 
 <?php include "../includes/footer.php"; ?>
 
 <script>
 function switchTab(name) {
-    // Hide all content panels
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-    // Reset all tab buttons
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.remove('bg-blue-600', 'text-white');
         btn.classList.add('text-gray-400', 'hover:text-white');
     });
-    // Activate selected
     document.getElementById('tab-' + name).classList.add('active');
     const activeBtn = document.getElementById('tab-btn-' + name);
     activeBtn.classList.add('bg-blue-600', 'text-white');
     activeBtn.classList.remove('text-gray-400', 'hover:text-white');
-    // Update URL without reload
     history.replaceState(null, '', '?tab=' + name);
-    // Scroll to top of content
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
-
-// Init from URL param
 const urlTab = new URLSearchParams(window.location.search).get('tab');
 if (urlTab) switchTab(urlTab);
 </script>
-
 </body>
 </html>

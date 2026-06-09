@@ -1,8 +1,8 @@
 <?php
-$host = "sql111.infinityfree.com";
-$user = "if0_42122075";
-$password = "sucaso78com";
-$database = "if0_42122075_supercareData";
+$host = "localhost";
+$user = "root";
+$password = "";
+$database = "SuperCare_Data";
 
 $conn = new mysqli($host, $user, $password, $database);
 
